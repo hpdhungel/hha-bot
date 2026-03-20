@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">hha_bot</string>
+    <string name="accessibility_service_description">Runs scheduled HHAeXchange clock-in and clock-out automation.</string>
+    <string name="notification_channel_execution_name">Automation execution</string>
+    <string name="notification_channel_execution_description">Execution status for scheduled and manual HHA automation.</string>
+</resources>
