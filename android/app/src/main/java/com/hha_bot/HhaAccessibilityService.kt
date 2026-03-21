@@ -164,7 +164,7 @@ class HhaAccessibilityService : AccessibilityService() {
       throw IllegalStateException("Unable to launch HHAeXchange.")
     }
 
-    sleep(15000)
+    sleep(10000)
 
     if (isLoginScreenVisible()) {
       setTextOnBestField(
