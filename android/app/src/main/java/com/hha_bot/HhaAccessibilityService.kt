@@ -3,6 +3,7 @@ package com.hha_bot
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.app.KeyguardManager
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.graphics.Rect
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONObject
@@ -157,6 +159,8 @@ class HhaAccessibilityService : AccessibilityService() {
       throw IllegalStateException("Credentials are missing from schedule.")
     }
 
+    performWakeStepZero()
+
     sleep(5000)
     swipe(0.5f, 0.85f, 0.5f, 0.18f, 250)
 
@@ -265,6 +269,39 @@ class HhaAccessibilityService : AccessibilityService() {
     }
 
     cleanupRecentAppsSafely()
+  }
+
+  private fun performWakeStepZero() {
+    val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+    val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+
+    if (!powerManager.isInteractive) {
+      @Suppress("DEPRECATION")
+      val wakeLock =
+        powerManager.newWakeLock(
+          PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+            PowerManager.ACQUIRE_CAUSES_WAKEUP or
+            PowerManager.ON_AFTER_RELEASE,
+          "$packageName:automationWake",
+        )
+
+      try {
+        wakeLock.acquire(12_000L)
+        sleep(1200)
+      } finally {
+        if (wakeLock.isHeld) {
+          wakeLock.release()
+        }
+      }
+    }
+
+    if (keyguardManager.isKeyguardLocked) {
+      swipe(0.5f, 0.9f, 0.5f, 0.2f, 300)
+      sleep(1000)
+    }
+
+    performGlobalAction(GLOBAL_ACTION_HOME)
+    sleep(600)
   }
 
   private fun isLoginScreenVisible(): Boolean {
