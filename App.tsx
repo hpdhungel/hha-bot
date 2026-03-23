@@ -548,7 +548,7 @@ function AppContent(): React.JSX.Element {
             {credentialSets.length === 0 ? (
               <EmptyState
                 title="No users yet"
-                body="Create a parent HHA user account first, then add clock schedules as children under that user."
+                body="Create a HHA user account first, then add clock schedules under that user."
               />
             ) : (
               schedulesByAccount.map(({ account, schedules: accountSchedules }) => (
@@ -777,10 +777,7 @@ function AppContent(): React.JSX.Element {
           <View style={styles.modalBackdrop}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>
-                {accountDraft.id ? 'Edit user account' : 'Add user account'}
-              </Text>
-              <Text style={styles.panelBody}>
-                Parent user credentials are encrypted and shared by all child schedules.
+                {accountDraft.id ? 'Edit User account' : 'Add User Account'}
               </Text>
 
               <TextInput
@@ -800,8 +797,8 @@ function AppContent(): React.JSX.Element {
                   style={[styles.input, styles.passwordInput]}
                   placeholder={
                     accountDraft.id
-                      ? 'Password (optional - keep empty to keep current)'
-                      : 'Password (required)'
+                      ? 'HHA Password (optional - keep empty to keep current)'
+                      : 'HHA account Password (required)'
                   }
                   placeholderTextColor="#7b8794"
                   secureTextEntry={!showAccountPassword}
@@ -856,7 +853,7 @@ function AppContent(): React.JSX.Element {
                 showsVerticalScrollIndicator={false}>
                 <View style={styles.modalCard}>
                 <Text style={styles.modalTitle}>
-                  {draft.id ? 'Edit child schedule' : 'New child schedule'}
+                  {draft.id ? 'Edit schedule' : 'New schedule'}
                 </Text>
               <TextInput
                 style={styles.input}
