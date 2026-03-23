@@ -94,12 +94,19 @@ const fallbackModule: HhaAutomationNativeModule = {
   },
   async saveCredentialSet(credentialSetJson: string) {
     const credentialSet = JSON.parse(credentialSetJson) as CredentialSet;
+    const sanitizedCredential: CredentialSet = {
+      id: credentialSet.id,
+      email: credentialSet.email,
+      hasPassword:
+        credentialSet.hasPassword ||
+        Boolean(typeof credentialSet.password === 'string' && credentialSet.password.trim()),
+    };
     const nextCredentials = [...noopModuleState.credentialSets];
-    const existingIndex = nextCredentials.findIndex(item => item.id === credentialSet.id);
+    const existingIndex = nextCredentials.findIndex(item => item.id === sanitizedCredential.id);
     if (existingIndex >= 0) {
-      nextCredentials[existingIndex] = credentialSet;
+      nextCredentials[existingIndex] = sanitizedCredential;
     } else {
-      nextCredentials.push(credentialSet);
+      nextCredentials.push(sanitizedCredential);
     }
     noopModuleState.credentialSets = nextCredentials;
     noopModuleState.system = {

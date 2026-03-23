@@ -29,6 +29,8 @@ object HhaAutomationStore {
   private const val KEY_RUNTIME = "runtime"
   private const val KEY_EMAIL = "email"
   private const val KEY_PASSWORD = "password"
+  private const val KEY_CREDENTIAL_SETS = "credential_sets"
+  private const val KEY_CREDENTIAL_PASSWORD_PREFIX = "credential_password_"
 
   private const val EXECUTION_CHANNEL_ID = "hha_execution"
   private const val MAX_LOGS = 200
@@ -197,6 +199,132 @@ object HhaAutomationStore {
     return getSecurePrefs(context).getString(KEY_PASSWORD, null)
   }
 
+  fun getAllCredentials(context: Context): JSONArray {
+    return JSONArray(getPrefs(context).getString(KEY_CREDENTIAL_SETS, "[]") ?: "[]")
+  }
+
+  fun saveCredentialSet(context: Context, credentialSetJson: String): JSONArray {
+    val incoming = JSONObject(credentialSetJson)
+    val email = incoming.optString("email").trim()
+    if (email.isBlank()) {
+      throw IllegalArgumentException("Credential email is required.")
+    }
+
+    val requestedId = incoming.optString("id").trim()
+    val credentialId = if (requestedId.isBlank()) "cred_${UUID.randomUUID()}" else requestedId
+    val incomingPassword = incoming.optString("password")
+    val securePrefs = getSecurePrefs(context)
+    val existingPassword = securePrefs.getString(getCredentialPasswordKey(credentialId), null)
+    val hasPassword = incomingPassword.isNotBlank() || !existingPassword.isNullOrBlank()
+
+    val current = getAllCredentials(context)
+    val next = JSONArray()
+    var updated = false
+
+    for (index in 0 until current.length()) {
+      val item = current.optJSONObject(index) ?: continue
+      if (item.optString("id") == credentialId) {
+        next.put(
+          JSONObject()
+            .put("id", credentialId)
+            .put("email", email)
+            .put("hasPassword", hasPassword),
+        )
+        updated = true
+      } else {
+        next.put(
+          JSONObject()
+            .put("id", item.optString("id"))
+            .put("email", item.optString("email"))
+            .put("hasPassword", item.optBoolean("hasPassword", false)),
+        )
+      }
+    }
+
+    if (!updated) {
+      next.put(
+        JSONObject()
+          .put("id", credentialId)
+          .put("email", email)
+          .put("hasPassword", hasPassword),
+      )
+    }
+
+    getPrefs(context).edit().putString(KEY_CREDENTIAL_SETS, next.toString()).apply()
+
+    val secureEditor = securePrefs.edit()
+    if (incomingPassword.isNotBlank()) {
+      secureEditor.putString(getCredentialPasswordKey(credentialId), incomingPassword)
+    } else if (!hasPassword) {
+      secureEditor.remove(getCredentialPasswordKey(credentialId))
+    }
+    secureEditor.apply()
+
+    return next
+  }
+
+  fun deleteCredential(context: Context, credentialId: String): JSONArray {
+    if (credentialId.isBlank()) {
+      return getAllCredentials(context)
+    }
+
+    val current = getAllCredentials(context)
+    val next = JSONArray()
+
+    for (index in 0 until current.length()) {
+      val item = current.optJSONObject(index) ?: continue
+      if (item.optString("id") != credentialId) {
+        next.put(item)
+      }
+    }
+
+    getPrefs(context).edit().putString(KEY_CREDENTIAL_SETS, next.toString()).apply()
+    getSecurePrefs(context).edit().remove(getCredentialPasswordKey(credentialId)).apply()
+
+    val schedules = getSchedules(context)
+    val updatedSchedules = JSONArray()
+    for (index in 0 until schedules.length()) {
+      val schedule = schedules.optJSONObject(index) ?: continue
+      if (schedule.optString("accountId") == credentialId) {
+        val cleaned = JSONObject(schedule.toString())
+        cleaned.remove("accountId")
+        cleaned.put("password", "")
+        updatedSchedules.put(cleaned)
+      } else {
+        updatedSchedules.put(schedule)
+      }
+    }
+    saveSchedules(context, updatedSchedules)
+
+    return next
+  }
+
+  fun getCredentialEmailById(context: Context, credentialId: String): String? {
+    if (credentialId.isBlank()) {
+      return null
+    }
+
+    val credentials = getAllCredentials(context)
+    for (index in 0 until credentials.length()) {
+      val credential = credentials.optJSONObject(index) ?: continue
+      if (credential.optString("id") == credentialId) {
+        return credential.optString("email").trim().ifBlank { null }
+      }
+    }
+
+    return null
+  }
+
+  fun getCredentialPasswordById(context: Context, credentialId: String): String? {
+    if (credentialId.isBlank()) {
+      return null
+    }
+
+    return getSecurePrefs(context)
+      .getString(getCredentialPasswordKey(credentialId), null)
+      ?.takeIf { it.isNotBlank() }
+  }
+
   fun getSystemStatus(context: Context): JSONObject {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
     val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -224,12 +352,24 @@ object HhaAutomationStore {
         true
       }
 
+    val credentials = getAllCredentials(context)
+    var hasAccountCredentials = false
+    for (index in 0 until credentials.length()) {
+      val credential = credentials.optJSONObject(index) ?: continue
+      if (credential.optBoolean("hasPassword", false)) {
+        hasAccountCredentials = true
+        break
+      }
+    }
+
+    val hasLegacyCredentials = getCredentialsSummary(context).optBoolean("hasPassword", false)
+
     return JSONObject()
       .put("accessibilityEnabled", isAccessibilityServiceEnabled(context))
       .put("exactAlarmGranted", exactAlarmGranted)
       .put("ignoringBatteryOptimizations", batteryIgnored)
       .put("notificationPermissionGranted", notificationsGranted)
-      .put("hasCredentials", getCredentialsSummary(context).optBoolean("hasPassword", false))
+      .put("hasCredentials", hasAccountCredentials || hasLegacyCredentials)
   }
 
   fun showNotification(context: Context, title: String, body: String, status: String) {
@@ -379,5 +519,9 @@ object HhaAutomationStore {
     }
 
     return null
+  }
+
+  private fun getCredentialPasswordKey(credentialId: String): String {
+    return "$KEY_CREDENTIAL_PASSWORD_PREFIX$credentialId"
   }
 }

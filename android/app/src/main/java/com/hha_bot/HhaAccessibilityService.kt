@@ -152,11 +152,17 @@ class HhaAccessibilityService : AccessibilityService() {
   }
 
   private fun executeOnce(schedule: JSONObject) {
-    val email = schedule.optString("email", "").takeIf { it.isNotBlank() }
-    val password = schedule.optString("password", "").takeIf { it.isNotBlank() }
+    val accountId = schedule.optString("accountId", "").takeIf { it.isNotBlank() }
+    val accountEmail = accountId?.let { HhaAutomationStore.getCredentialEmailById(this, it) }
+    val accountPassword = accountId?.let { HhaAutomationStore.getCredentialPasswordById(this, it) }
+
+    val email = accountEmail?.takeIf { it.isNotBlank() } ?: schedule.optString("email", "").takeIf { it.isNotBlank() }
+    val password =
+      accountPassword?.takeIf { it.isNotBlank() }
+        ?: schedule.optString("password", "").takeIf { it.isNotBlank() }
 
     if (email.isNullOrBlank() || password.isNullOrBlank()) {
-      throw IllegalStateException("Credentials are missing from schedule.")
+      throw IllegalStateException("Credentials are missing for this schedule account.")
     }
 
     performWakeStepZero()

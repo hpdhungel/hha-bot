@@ -66,6 +66,31 @@ class HhaAutomationModule(private val reactContext: ReactApplicationContext) :
   }
 
   @ReactMethod
+  fun getAllCredentials(promise: Promise) {
+    promise.resolve(HhaAutomationStore.getAllCredentials(reactContext).toString())
+  }
+
+  @ReactMethod
+  fun saveCredentialSet(credentialSetJson: String, promise: Promise) {
+    try {
+      val credentials = HhaAutomationStore.saveCredentialSet(reactContext, credentialSetJson)
+      promise.resolve(credentials.toString())
+    } catch (error: Exception) {
+      promise.reject("SAVE_CREDENTIAL_SET_FAILED", error)
+    }
+  }
+
+  @ReactMethod
+  fun deleteCredential(credentialId: String, promise: Promise) {
+    try {
+      val credentials = HhaAutomationStore.deleteCredential(reactContext, credentialId)
+      promise.resolve(credentials.toString())
+    } catch (error: Exception) {
+      promise.reject("DELETE_CREDENTIAL_FAILED", error)
+    }
+  }
+
+  @ReactMethod
   fun getRuntimeStatus(promise: Promise) {
     promise.resolve(HhaAutomationStore.getRuntimeStatus(reactContext).toString())
   }

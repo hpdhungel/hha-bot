@@ -13,17 +13,19 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import DateTimePicker, {
+import  {
   DateTimePickerAndroid,
   type DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   clearLogs,
+  getAllCredentials,
   deleteSchedule,
   getLogs,
   getRuntimeStatus,
   getSchedules,
+  saveCredentialSet,
   getSystemStatus,
   hasNativeAutomationSupport,
   openAccessibilitySettings,
@@ -33,6 +35,7 @@ import {
   upsertSchedule,
 } from './src/hhaAutomation';
 import {
+  type CredentialSet,
   type ExecutionLog,
   type RuntimeStatus,
   type Schedule,
@@ -44,6 +47,13 @@ const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 type VisualTone = 'Neutral' | 'Success' | 'Warning' | 'Danger';
 
+type AccountDraft = {
+  id: string;
+  email: string;
+  password: string;
+  hasPassword: boolean;
+};
+
 const emptySchedule = (): Schedule => ({
   id: '',
   name: '',
@@ -54,8 +64,16 @@ const emptySchedule = (): Schedule => ({
   visitLabel: '',
   enabled: true,
   packageName: 'com.hhaexchange.caregiver',
+  accountId: '',
   email: '',
   password: '',
+});
+
+const emptyAccountDraft = (): AccountDraft => ({
+  id: '',
+  email: '',
+  password: '',
+  hasPassword: false,
 });
 
 function App(): React.JSX.Element {
@@ -74,10 +92,15 @@ function AppContent(): React.JSX.Element {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [credentialSets, setCredentialSets] = useState<CredentialSet[]>([]);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus>({
     status: 'idle',
   });
+  const [accountEditorVisible, setAccountEditorVisible] = useState(false);
+  const [accountDraft, setAccountDraft] = useState<AccountDraft>(emptyAccountDraft());
+  const [showAccountPassword, setShowAccountPassword] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [draft, setDraft] = useState<Schedule>(emptySchedule());
   const [busyScheduleId, setBusyScheduleId] = useState<string | null>(null);
 
@@ -96,18 +119,20 @@ function AppContent(): React.JSX.Element {
   }, []);
 
   async function refreshAll() {
-    const [nextSchedules, nextLogs, nextRuntime, nextSystem] =
+    const [nextSchedules, nextLogs, nextRuntime, nextSystem, nextCredentialSets] =
       await Promise.all([
         getSchedules(),
         getLogs(),
         getRuntimeStatus(),
         getSystemStatus(),
+        getAllCredentials(),
       ]);
 
     setSchedules(nextSchedules);
     setLogs(nextLogs);
     setRuntimeStatus(nextRuntime);
     setSystemStatus(nextSystem);
+    setCredentialSets(nextCredentialSets);
   }
 
   async function refreshRuntimeAndLogs() {
@@ -125,13 +150,50 @@ function AppContent(): React.JSX.Element {
     );
   }
 
-  function openCreateModal() {
-    setDraft(emptySchedule());
+  function openCreateModal(accountId?: string) {
+    const linkedAccount = accountId
+      ? credentialSets.find(account => account.id === accountId)
+      : undefined;
+
+    setDraft({
+      ...emptySchedule(),
+      accountId: linkedAccount?.id ?? '',
+      email: linkedAccount?.email ?? '',
+    });
+    setShowPassword(false);
     setEditorVisible(true);
   }
 
+  function openCreateAccountModal() {
+    setAccountDraft(emptyAccountDraft());
+    setShowAccountPassword(false);
+    setAccountEditorVisible(true);
+  }
+
+  function openEditAccountModal(account: CredentialSet) {
+    setAccountDraft({
+      id: account.id,
+      email: account.email,
+      password: '',
+      hasPassword: account.hasPassword,
+    });
+    setShowAccountPassword(false);
+    setAccountEditorVisible(true);
+  }
+
   function openEditModal(schedule: Schedule) {
-    setDraft(schedule);
+    const linkedAccount =
+      (schedule.accountId
+        ? credentialSets.find(account => account.id === schedule.accountId)
+        : undefined) ?? findCredentialByEmail(credentialSets, schedule.email);
+
+    setDraft({
+      ...schedule,
+      accountId: linkedAccount?.id ?? schedule.accountId ?? '',
+      email: linkedAccount?.email ?? schedule.email,
+      password: '',
+    });
+    setShowPassword(false);
     setEditorVisible(true);
   }
 
@@ -146,8 +208,24 @@ function AppContent(): React.JSX.Element {
       return;
     }
 
-    if (!draft.email.trim() || !draft.password.trim()) {
-      Alert.alert('Missing credentials', 'Email and password are required for this schedule.');
+    const email = draft.email.trim();
+    if (!email) {
+      Alert.alert('Missing account', 'HHA account email is required.');
+      return;
+    }
+
+    const linkedById = draft.accountId
+      ? credentialSets.find(account => account.id === draft.accountId)
+      : undefined;
+    const linkedByEmail = findCredentialByEmail(credentialSets, email);
+    const linkedAccount = linkedByEmail ?? linkedById;
+    const enteredPassword = draft.password.trim();
+
+    if ((!linkedAccount || !linkedAccount.hasPassword) && !enteredPassword) {
+      Alert.alert(
+        'Missing password',
+        'Add a password for new accounts, or pick an existing account with saved credentials.',
+      );
       return;
     }
 
@@ -155,6 +233,28 @@ function AppContent(): React.JSX.Element {
       Alert.alert('Missing days', 'Pick at least one day for the schedule.');
       return;
     }
+
+    const accountPayload: CredentialSet = {
+      id: linkedAccount?.id ?? createAccountId(),
+      email,
+      hasPassword: linkedAccount?.hasPassword ?? false,
+      ...(enteredPassword ? { password: enteredPassword } : {}),
+    };
+
+    const shouldUpsertAccount =
+      !linkedAccount ||
+      linkedAccount.email.trim().toLowerCase() !== email.toLowerCase() ||
+      Boolean(enteredPassword);
+
+    let nextCredentialSets = credentialSets;
+    if (shouldUpsertAccount) {
+      nextCredentialSets = await saveCredentialSet(accountPayload);
+      setCredentialSets(nextCredentialSets);
+    }
+
+    const resolvedAccount =
+      nextCredentialSets.find(account => account.id === accountPayload.id) ??
+      findCredentialByEmail(nextCredentialSets, email);
 
     const payload: Schedule = {
       ...draft,
@@ -164,13 +264,15 @@ function AppContent(): React.JSX.Element {
         `${draft.type === 'clockOut' ? 'Clock Out' : 'Clock In'} ${draft.clientName.trim()}`,
       clientName: draft.clientName.trim(),
       visitLabel: draft.visitLabel.trim(),
-      email: draft.email.trim(),
-      password: draft.password,
+      accountId: resolvedAccount?.id,
+      email,
+      password: '',
     };
 
     const nextSchedules = await upsertSchedule(payload);
     setSchedules(nextSchedules);
     setEditorVisible(false);
+    setShowPassword(false);
     setDraft(emptySchedule());
     setSystemStatus(await getSystemStatus());
   }
@@ -214,6 +316,40 @@ function AppContent(): React.JSX.Element {
     setLogs([]);
   }
 
+  async function saveAccountDraft() {
+    const email = accountDraft.email.trim();
+    if (!email) {
+      Alert.alert('Missing email', 'HHA account email is required.');
+      return;
+    }
+
+    const existingById = accountDraft.id
+      ? credentialSets.find(account => account.id === accountDraft.id)
+      : undefined;
+    const existingByEmail = findCredentialByEmail(credentialSets, email);
+    const existing = existingById ?? existingByEmail;
+    const enteredPassword = accountDraft.password.trim();
+
+    if (!(existing?.hasPassword || accountDraft.hasPassword) && !enteredPassword) {
+      Alert.alert('Missing password', 'Password is required for a new user account.');
+      return;
+    }
+
+    const payload: CredentialSet = {
+      id: existing?.id ?? (accountDraft.id || createAccountId()),
+      email,
+      hasPassword: existing?.hasPassword ?? accountDraft.hasPassword,
+      ...(enteredPassword ? { password: enteredPassword } : {}),
+    };
+
+    const nextCredentialSets = await saveCredentialSet(payload);
+    setCredentialSets(nextCredentialSets);
+    setAccountEditorVisible(false);
+    setAccountDraft(emptyAccountDraft());
+    setShowAccountPassword(false);
+    setSystemStatus(await getSystemStatus());
+  }
+
   function parseDraftToDate(): Date {
     const d = new Date();
     const m = draft.time.match(/(\d{1,2}):(\d{2})/);
@@ -246,8 +382,86 @@ function AppContent(): React.JSX.Element {
     });
   }
 
+  function parseVisitTimeToDate(): Date {
+    const d = new Date();
+    const m = draft.visitLabel.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+
+    if (!m) {
+      d.setHours(7, 0, 0, 0);
+      return d;
+    }
+
+    const rawHour = parseInt(m[1], 10);
+    const minute = parseInt(m[2], 10);
+    const isPm = m[3].toUpperCase() === 'PM';
+    let hour24 = rawHour % 12;
+    if (isPm) {
+      hour24 += 12;
+    }
+
+    d.setHours(hour24, minute, 0, 0);
+    return d;
+  }
+
+  function formatTimeForVisitLabel(date: Date): string {
+    let hour = date.getHours();
+    const minute = String(date.getMinutes()).padStart(2, '0');
+    const period = hour < 12 ? 'AM' : 'PM';
+    if (hour === 0) {
+      hour = 12;
+    } else if (hour > 12) {
+      hour -= 12;
+    }
+    return `${hour}:${minute} ${period}`;
+  }
+
+  function onVisitTimePickerChange(event: DateTimePickerEvent, selected?: Date) {
+    if (event.type !== 'set' || !selected) {
+      return;
+    }
+
+    setDraft(current => ({
+      ...current,
+      visitLabel: formatTimeForVisitLabel(selected),
+    }));
+  }
+
+  function openVisitTimePicker() {
+    DateTimePickerAndroid.open({
+      value: parseVisitTimeToDate(),
+      mode: 'time',
+      is24Hour: false,
+      display: 'default',
+      onChange: onVisitTimePickerChange,
+    });
+  }
+
   const enabledCount = schedules.filter(schedule => schedule.enabled).length;
   const statusTone = getStatusTone(runtimeStatus.status);
+  const schedulesByAccount = credentialSets.map(account => ({
+    account,
+    schedules: schedules.filter(schedule => {
+      if (schedule.accountId) {
+        return schedule.accountId === account.id;
+      }
+
+      return (
+        schedule.email.trim().toLowerCase() === account.email.trim().toLowerCase()
+      );
+    }),
+  }));
+
+  const unassignedSchedules = schedules.filter(schedule => {
+    const linkedById = schedule.accountId
+      ? credentialSets.some(account => account.id === schedule.accountId)
+      : false;
+
+    if (linkedById) {
+      return false;
+    }
+
+    return !findCredentialByEmail(credentialSets, schedule.email);
+  });
 
   return (
     <View
@@ -320,72 +534,124 @@ function AppContent(): React.JSX.Element {
           <View style={styles.panel}>
             <View style={styles.panelHeader}>
               <View style={styles.panelHeaderText}>
-                <Text style={styles.panelTitle}>Schedules</Text>
+                <Text style={styles.panelTitle}>Users & Schedules</Text>
                 <Text style={styles.panelBody}>
-                  Build multiple clock-in or clock-out schedules and trigger the
-                  same native flow manually when needed.
+                  Create an HHA user account first, then add multiple child
+                  clock-in and clock-out schedules inside that account.
                 </Text>
               </View>
-              <Pressable style={styles.primaryButton} onPress={openCreateModal}>
-                <Text style={styles.primaryButtonText}>Add schedule</Text>
+              <Pressable style={styles.primaryButton} onPress={openCreateAccountModal}>
+                <Text style={styles.primaryButtonText}>Add user</Text>
               </Pressable>
             </View>
 
-            {schedules.length === 0 ? (
+            {credentialSets.length === 0 ? (
               <EmptyState
-                title="No schedules yet"
-                body="Create a clock-in or clock-out schedule, assign a client, and sync it to the Android alarm manager."
+                title="No users yet"
+                body="Create a parent HHA user account first, then add clock schedules as children under that user."
               />
             ) : (
-              schedules.map(schedule => (
-                <View key={schedule.id} style={styles.scheduleCard}>
-                  <View style={styles.scheduleTopRow}>
+              schedulesByAccount.map(({ account, schedules: accountSchedules }) => (
+                <View key={account.id} style={styles.userCard}>
+                  <View style={styles.userHeader}>
                     <View style={styles.panelHeaderText}>
-                      <Text style={styles.scheduleTypeChip}>
-                        {schedule.type === 'clockOut' ? 'CLOCK OUT' : 'CLOCK IN'}
-                      </Text>
-                      <Text style={styles.scheduleTitle}>{schedule.name}</Text>
-                      <Text style={styles.scheduleMeta}>
-                       Automation Start at: {formatTimeAMPM(schedule.time)} 
-                      </Text>
-                      <Text style={styles.scheduleMeta}>
-                       Days: {formatDays(schedule.days)}
+                      <Text style={styles.userEmail}>{account.email}</Text>
+                      <Text style={styles.userMeta}>
+                        {accountSchedules.length} Total
+                        {accountSchedules.length === 1 ? ' schedule' : ' schedules'}
                       </Text>
                     </View>
-                    <Switch
-                      value={schedule.enabled}
-                      onValueChange={value => {
-                        ignorePromise(onToggleEnabled(schedule, value));
-                      }}
-                      thumbColor={schedule.enabled ? '#f0b429' : '#9fb3c8'}
-                      trackColor={{ false: '#486581', true: '#334e68' }}
-                    />
+                    <View style={styles.userActions}>
+                     
+                      <GhostButton
+                        label="Edit user"
+                        onPress={() => openEditAccountModal(account)}
+                      />
+                       <GhostButton
+                        label="New Schedule"
+                        onPress={() => openCreateModal(account.id)}
+                      />
+                    </View>
                   </View>
-                  <Text style={styles.scheduleDetail}>Email: {schedule.email}</Text>
-                  <Text style={styles.scheduleDetail}>Client: {schedule.clientName}</Text>
-                  <Text style={styles.scheduleDetail}>Visit: {schedule.visitLabel}</Text>
-                  <View style={styles.scheduleActions}>
-                    <GhostButton
-                      label={busyScheduleId === schedule.id ? 'Running…' : 'Run now'}
-                      onPress={() => {
-                        ignorePromise(onRunNow(schedule));
-                      }}
-                    />
-                    <GhostButton
-                      label="Edit"
-                      onPress={() => openEditModal(schedule)}
-                    />
-                    <GhostButton
-                      label="Delete"
-                      tone="danger"
-                      onPress={() => {
-                        ignorePromise(onDeleteSchedule(schedule));
-                      }}
-                    />
-                  </View>
+
+                  {accountSchedules.length === 0 ? (
+                    <Text style={styles.userEmptyText}>
+                      No child schedules yet. Use Add clock to create the first Clock In or Clock Out.
+                    </Text>
+                  ) : (
+                    <View style={styles.userScheduleList}>
+                      {accountSchedules.map(schedule => (
+                        <View key={schedule.id} style={styles.childScheduleCard}>
+                          <View style={styles.scheduleTopRow}>
+                            <View style={styles.panelHeaderText}>
+                              <Text style={styles.scheduleTypeChip}>
+                                {schedule.type === 'clockOut' ? 'CLOCK OUT' : 'CLOCK IN'}
+                              </Text>
+                              <Text style={styles.scheduleTitle}>{schedule.name}</Text>
+                              <Text style={styles.scheduleMeta}>
+                                Automation Start at: {formatTimeAMPM(schedule.time)}
+                              </Text>
+                              <Text style={styles.scheduleMeta}>
+                                Days: {formatDays(schedule.days)}
+                              </Text>
+                            </View>
+                            <Switch
+                              value={schedule.enabled}
+                              onValueChange={value => {
+                                ignorePromise(onToggleEnabled(schedule, value));
+                              }}
+                              thumbColor={schedule.enabled ? '#f0b429' : '#9fb3c8'}
+                              trackColor={{ false: '#486581', true: '#334e68' }}
+                            />
+                          </View>
+                          <Text style={styles.scheduleDetail}>Client: {schedule.clientName}</Text>
+                          <Text style={styles.scheduleDetail}>Visit: {schedule.visitLabel}</Text>
+                          <View style={styles.scheduleActions}>
+                            <GhostButton
+                              label={busyScheduleId === schedule.id ? 'Running…' : 'Run now'}
+                              onPress={() => {
+                                ignorePromise(onRunNow(schedule));
+                              }}
+                            />
+                            <GhostButton
+                              label="Edit"
+                              onPress={() => openEditModal(schedule)}
+                            />
+                            <GhostButton
+                              label="Delete"
+                              tone="danger"
+                              onPress={() => {
+                                ignorePromise(onDeleteSchedule(schedule));
+                              }}
+                            />
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </View>
               ))
             )}
+
+            {unassignedSchedules.length > 0 ? (
+              <View style={styles.unassignedCard}>
+                <Text style={styles.settingsTitle}>Unassigned schedules</Text>
+                <Text style={styles.panelBody}>
+                  These schedules are not linked to a parent account yet. Edit each one and pick a user.
+                </Text>
+                {unassignedSchedules.map(schedule => (
+                  <View key={schedule.id} style={styles.credentialItem}>
+                    <View style={styles.panelHeaderText}>
+                      <Text style={styles.credentialEmail}>{schedule.name}</Text>
+                      <Text style={styles.scheduleMeta}>
+                        {schedule.type === 'clockOut' ? 'Clock Out' : 'Clock In'} • {formatTimeAMPM(schedule.time)}
+                      </Text>
+                    </View>
+                    <GhostButton label="Assign" onPress={() => openEditModal(schedule)} />
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
         ) : null}
 
@@ -435,7 +701,8 @@ function AppContent(): React.JSX.Element {
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Permissions</Text>
             <Text style={styles.panelBody}>
-              Credentials are stored per schedule. Exact alarms, accessibility
+              HHA credentials are stored as reusable encrypted parent accounts,
+              and each schedule links to one account. Exact alarms, accessibility
               access, notifications, and battery settings determine whether
               automation runs reliably in the background.
             </Text>
@@ -503,6 +770,81 @@ function AppContent(): React.JSX.Element {
         ) : null}
       </ScrollView>
 
+      <Modal animationType="slide" visible={accountEditorVisible} transparent>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.keyboardAvoidingView}>
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>
+                {accountDraft.id ? 'Edit user account' : 'Add user account'}
+              </Text>
+              <Text style={styles.panelBody}>
+                Parent user credentials are encrypted and shared by all child schedules.
+              </Text>
+
+              <TextInput
+                style={styles.input}
+                placeholder="HHA account email"
+                placeholderTextColor="#7b8794"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={accountDraft.email}
+                onChangeText={value =>
+                  setAccountDraft(current => ({ ...current, email: value }))
+                }
+              />
+
+              <View style={styles.passwordFieldRow}>
+                <TextInput
+                  style={[styles.input, styles.passwordInput]}
+                  placeholder={
+                    accountDraft.id
+                      ? 'Password (optional - keep empty to keep current)'
+                      : 'Password (required)'
+                  }
+                  placeholderTextColor="#7b8794"
+                  secureTextEntry={!showAccountPassword}
+                  value={accountDraft.password}
+                  onChangeText={value =>
+                    setAccountDraft(current => ({ ...current, password: value }))
+                  }
+                />
+                <Pressable
+                  style={styles.passwordToggle}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    showAccountPassword ? 'Hide password' : 'Show password'
+                  }
+                  onPress={() => setShowAccountPassword(current => !current)}>
+                  <Text style={styles.passwordToggleText}>
+                    {showAccountPassword ? '🙈' : '👁'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <View style={styles.modalActions}>
+                <GhostButton
+                  label="Cancel"
+                  onPress={() => {
+                    setAccountEditorVisible(false);
+                    setShowAccountPassword(false);
+                    setAccountDraft(emptyAccountDraft());
+                  }}
+                />
+                <Pressable
+                  style={styles.primaryButton}
+                  onPress={() => {
+                    ignorePromise(saveAccountDraft());
+                  }}>
+                  <Text style={styles.primaryButtonText}>Save user</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
         <Modal animationType="slide" visible={editorVisible} transparent>
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -514,7 +856,7 @@ function AppContent(): React.JSX.Element {
                 showsVerticalScrollIndicator={false}>
                 <View style={styles.modalCard}>
                 <Text style={styles.modalTitle}>
-                  {draft.id ? 'Edit schedule' : 'New schedule'}
+                  {draft.id ? 'Edit child schedule' : 'New child schedule'}
                 </Text>
               <TextInput
                 style={styles.input}
@@ -543,20 +885,23 @@ function AppContent(): React.JSX.Element {
               <Pressable
                 style={styles.timePickerButton}
                 onPress={openTimePicker}>
-                <Text style={styles.timePickerLabel}>{draft.type === 'clockOut' ? 'Clock-Out Time' : 'Clock-In Time'} (tap to select)</Text>
+                <Text style={styles.timePickerLabel}>Automation Start time(tap to select)</Text>
                 <Text style={styles.timePickerValue}>
                   {draft.time ? formatTimeAMPM(draft.time) : 'Pick a time'}
                 </Text>
               </Pressable>
-              <TextInput
-                style={styles.input}
-                placeholder={draft.type === 'clockOut' ? "Clock-Out Time (e.g. '11:30 PM')" : "Clock-In Time (e.g. '11:30 PM')"}
-                placeholderTextColor="#7b8794"
-                value={draft.visitLabel}
-                onChangeText={value =>
-                  setDraft(current => ({ ...current, visitLabel: value }))
-                }
-              />
+              <Pressable
+                style={styles.timePickerButton}
+                onPress={openVisitTimePicker}>
+                <Text style={styles.timePickerLabel}>
+                  {draft.type === 'clockOut'
+                    ? 'Clock-Out Time (tap to select)'
+                    : 'Clock-In Time (tap to select)'}
+                </Text>
+                <Text style={styles.timePickerValue}>
+                  {draft.visitLabel || 'Pick a time'}
+                </Text>
+              </Pressable>
               <TextInput
                 style={styles.input}
                 placeholder="Client name"
@@ -566,30 +911,6 @@ function AppContent(): React.JSX.Element {
                   setDraft(current => ({ ...current, clientName: value }))
                 }
               />
-
-              <Text style={styles.inputLabel}>HHA Account</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Email"
-                placeholderTextColor="#7b8794"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                value={draft.email}
-                onChangeText={value =>
-                  setDraft(current => ({ ...current, email: value }))
-                }
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Password"
-                placeholderTextColor="#7b8794"
-                secureTextEntry
-                value={draft.password}
-                onChangeText={value =>
-                  setDraft(current => ({ ...current, password: value }))
-                }
-              />
-
               <View style={styles.daysRow}>
                 {dayLabels.map((label, index) => (
                   <Pressable
@@ -625,6 +946,7 @@ function AppContent(): React.JSX.Element {
                   label="Cancel"
                   onPress={() => {
                     setEditorVisible(false);
+                    setShowPassword(false);
                     setDraft(emptySchedule());
                   }}
                 />
@@ -783,6 +1105,21 @@ function formatDays(days: boolean[]) {
 
 function createId() {
   return `sch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createAccountId() {
+  return `cred_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function findCredentialByEmail(credentialSets: CredentialSet[], email: string) {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  return credentialSets.find(
+    credential => credential.email.trim().toLowerCase() === normalized,
+  );
 }
 
 function formatDate(value: string) {
@@ -1042,6 +1379,62 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
+  userCard: {
+    borderRadius: 22,
+    backgroundColor: '#dce8f5',
+    padding: 16,
+    gap: 12,
+  },
+  userHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    alignItems: 'flex-start',
+  },
+  userLabel: {
+    color: '#486581',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  userEmail: {
+    color: '#102a43',
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  userMeta: {
+    color: '#334e68',
+    marginTop: 4,
+    fontSize: 13,
+  },
+  userActions: {
+    gap: 4,
+    alignItems: 'flex-end',
+  },
+  userEmptyText: {
+    color: '#486581',
+    fontSize: 14,
+    lineHeight: 20,
+    backgroundColor: '#f0f4f8',
+    borderRadius: 14,
+    padding: 12,
+  },
+  userScheduleList: {
+    gap: 10,
+  },
+  childScheduleCard: {
+    borderRadius: 18,
+    backgroundColor: '#f8fbff',
+    padding: 14,
+    gap: 8,
+  },
+  unassignedCard: {
+    borderRadius: 22,
+    backgroundColor: '#fff3cd',
+    padding: 16,
+    gap: 10,
+  },
   scheduleTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1167,6 +1560,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 13,
     color: '#102a43',
+  },
+  passwordFieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  passwordInput: {
+    flex: 1,
+  },
+  passwordToggle: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#d9e2ec',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  passwordToggleText: {
+    fontSize: 20,
   },
   timePickerButton: {
     borderRadius: 16,

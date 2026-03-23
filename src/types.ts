@@ -4,6 +4,7 @@ export type CredentialSet = {
   id: string;
   email: string;
   hasPassword: boolean;
+  password?: string;
 };
 
 export type Schedule = {
@@ -16,6 +17,7 @@ export type Schedule = {
   visitLabel: string;
   enabled: boolean;
   packageName: string;
+  accountId?: string;
   email: string;
   password: string;
 };
